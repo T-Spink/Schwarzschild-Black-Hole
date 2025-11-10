@@ -1,6 +1,6 @@
 # Schwarzschild-Black-Hole
 
-![Alt text](images/SchwarzschildBlackHole.png)
+![Alt text](./SchwarzschildBlackHole.png)
 
 
 Black holes distort the nearby gravitational field which causes interesting such as gravitational lensing.
