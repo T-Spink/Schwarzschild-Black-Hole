@@ -16,9 +16,9 @@ include_directories(
 
 # Add source files
 set(SOURCES
-    ${PROJECT_SOURCE_DIR}/main.cpp
+    ${PROJECT_SOURCE_DIR}/src/main.cpp
     ${PROJECT_SOURCE_DIR}/src/geodesics.cpp
-    ${PROJECT_SOURCE_DIR}/src/constants.cpp
+    ${PROJECT_SOURCE_DIR}/integrator/integrator.cpp
 )
 
 add_executable(BlackHole ${SOURCES})

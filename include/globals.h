@@ -2,7 +2,6 @@
 #define GLOBALS_H
 
 #include "integrator.h"
-#include "constants.h"
 #include <Eigen/Dense>
 
 struct globals
@@ -12,32 +11,32 @@ struct globals
 
     // numerical params
     const double delta = 1e-1;
-    const IntegrationMethod int_method = RK45;
-    const double rk45_tol = 1e-6;
+    const IntegrationMethod int_method = IntegrationMethod::RK2;
+    const double rk45_tolerance = 1e-6;
 
     // physical params
-    const double Rs    = 1;
-    const double disk0 = 3*Rs;
-    const double diskf = 6.;
+    const double Rs = 1.;
+    const double annulus_inner_radius = 3. * Rs;
+    const double annulus_outer_radius = 6.;
 
     // graphics params/ initial conditions
-    const double R0 = 9.f;
-    const double theta0 = M_PI_2-0.1;
-    const double phi0 = 0.f;
+    const double R0 = 9.;
+    const double theta0 = M_PI_2 - 0.1;
+    const double phi0 = 0.;
     const int n_pixels = 300;
     const int n_window = 500;
     const double fov_degs = 90.;
     const bool show_Rs = false;
-    
+
 
     // ========================================= // 
     // variables
 
     unsigned char* pixels = nullptr;
-    std::atomic<int> render_count=0;
+    std::atomic<int> render_count = 0;
 
-    int N_pixels;
-    double pixel_sf;
+    int N_pixels = 0;
+    double pixel_sf = -1.;
     Eigen::Vector<double, 3> position;
     Eigen::Vector<double,3> u,v,n;
     Eigen::Matrix<double,4,4> tetrad;
@@ -49,43 +48,49 @@ struct globals
 
     globals(void)
     {
-        N_pixels = n_pixels*n_pixels;
-        pixel_sf = R0*tan(fov_degs*rads_per_degs/2.f) / (n_pixels/2.);
+        const double rads_per_degs = M_PI / 180.;
+        N_pixels = n_pixels * n_pixels;
+        pixel_sf = R0 * std::tan(fov_degs * rads_per_degs / 2.) / (n_pixels / 2.);
 
         pixels = new unsigned char[n_pixels * n_pixels * 3];
-        memset(pixels, 0, 3*N_pixels*sizeof(unsigned char));
+        memset(pixels, 0, 3 * N_pixels * sizeof(unsigned char));
 
         // position of camera
         position << R0, theta0, phi0;
 
+        const double st = std::sin(theta0);
+        const double ct = std::cos(theta0);
+        const double sp = std::sin(phi0);
+        const double cp = std::cos(phi0);
+
         // determine normal to and basis vectors of the image plane 
         n << 
-            R0*sin(theta0)*cos(phi0), 
-            R0*sin(theta0)*sin(phi0),
-            R0*cos(theta0)
+            R0 * st * cp, 
+            R0 * st * sp,
+            R0 * ct
         ;
-        u << -n[2]/n.norm(), 0, n[0]/n.norm();
+        u << -n[2] / n.norm(), 0, n[0] / n.norm();
         v = n.cross(u).normalized();
     
         // initialise tetrad matrix
-        const double f = (1.f-Rs/R0);
+        const double f = 1. - Rs / R0;
         tetrad = Eigen::Matrix<double,4,4>::Zero();
-        tetrad(0,0) = 1.f/std::sqrt(f);
+        tetrad(0,0) = 1. / std::sqrt(f);
         tetrad(1,1) = std::sqrt(f);
-        tetrad(2,2) = 1.f/R0;
-        tetrad(3,3) = 1.f/(R0*sin(theta0));
+        tetrad(2,2) = 1. / R0;
+        tetrad(3,3) = 1. / (R0 * st);
 
         // calculate tranformation matrix
         cart_to_spherical <<  
-            (sin(theta0)*cos(phi0)),
-            (sin(theta0)*sin(phi0)),
-            (cos(theta0)          ),
-            (cos(theta0)*cos(phi0)),
-            (cos(theta0)*sin(phi0)),
-            (-sin(theta0)         ),
-            (-sin(phi0)           ),
-            (cos(phi0)            ),
-            (0.                   )
+            (st * cp),
+            (st * sp),
+            (ct     ),
+            (ct * cp),
+            (ct * sp),
+            (-st    ),
+            (-sp    ),
+            (cp     ),
+            (0.     )
         ;
     };
     

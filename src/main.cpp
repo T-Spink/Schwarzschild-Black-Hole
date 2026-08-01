@@ -1,5 +1,4 @@
 #include "geodesics.h"
-#include "constants.h"
 #include "integrator.h"
 #include "globals.h"
 #include <iostream>
@@ -14,49 +13,56 @@
 #include <mutex>
 #include <vector>
 
+// make calc_ functions pure/static do rhs can be static
+// then the integrator can be seperated out as a dll and make completely seperate
+
 std::mutex cout_mutex;
 
 void render_pixel(const globals& globs, geodesics& ray, const int ll)
 {
      // unflatten the coordinates
-    const int ii = ll%globs.n_pixels;
-    const int jj = (ll-ii) / globs.n_pixels;
+    const int ii = ll % globs.n_pixels;
+    const int jj = (ll - ii) / globs.n_pixels;
 
     // translate coordinates to range [-n/2, n/2]
-    const double ii_ = ii - 0.5*(globs.n_pixels-1);
-    const double jj_ = jj - 0.5*(globs.n_pixels-1);
+    const double ii_ = ii - 0.5 * (globs.n_pixels - 1);
+    const double jj_ = jj - 0.5 * (globs.n_pixels - 1);
 
     // calculate direction of camera/ ray
-    const Eigen::Vector<double,3> point = globs.pixel_sf*(jj_*globs.u + ii_*globs.v);
+    const Eigen::Vector<double,3> point = globs.pixel_sf * (jj_ * globs.u + ii_ * globs.v);
     const Eigen::Vector<double,3> ray_direction = (point - globs.n).normalized();
-    const Eigen::Vector<double,3> d = (globs.cart_to_spherical*ray_direction).normalized();
+    const Eigen::Vector<double,3> d = (globs.cart_to_spherical * ray_direction).normalized();
 
     // apply transformation
     double p[4] = {};
     p[0] = 1.;
-    for (int kk=0; kk<3; kk++)
-        p[kk+1] = globs.tetrad(kk+1,kk+1)*d[kk];
+    for (int kk = 0; kk < 3; ++kk)
+        p[kk + 1] = globs.tetrad(kk + 1, kk + 1) * d[kk];
 
     // finialise state
-    double IC[8] = {0.};
-    memcpy(&IC[1], globs.position.data(), 3*sizeof(double));  // initialise pos
-    memcpy(&IC[4], p                    , 4*sizeof(double));  // initialise momentum
+    double IC[8] = {0., 
+        globs.position[0], globs.position[1], globs.position[2], 
+        p[0], p[1], p[2], p[3]
+    };
 
-    // integrate geodesic equations to find end domain and rgb 
+    // integrate geodesic equations to find end domain
+    EndDomain end;
+    ray.traverse_geodesic(IC, end);
+
+    // get the rgb for the end domains
     unsigned char rgb[3];
-    ray.GetRGB(IC, rgb);
+    ray.get_RGB(end, rgb);
 
     // illustrate the edge of the black hole
-    EndDomain end = ray.GetEnd();
-    double r = std::sqrt(ii_*ii_ + jj_*jj_)*globs.pixel_sf/globs.Rs;
-    if (globs.show_Rs && end!=Disk && r<1.05 && r>0.95){
+    double r = std::sqrt(ii_ * ii_ + jj_ * jj_) * globs.pixel_sf / globs.Rs;
+    if (globs.show_Rs && end != EndDomain::Disk && r < 1.05 && r > 0.95){
         rgb[0] = 255;
-        rgb[1] = 0.;
-        rgb[2] = 0.;
+        rgb[1] = 0;
+        rgb[2] = 0;
     }
 
     // set the pixel colour
-    memcpy(&globs.pixels[3*ll], &rgb, 3*sizeof(unsigned char));
+    memcpy(&globs.pixels[3 * ll], &rgb, 3 * sizeof(unsigned char));
 
 }
 
@@ -64,25 +70,29 @@ void worker(globals& globs)
 {
     // create a ray
     geodesics ray;        
-    ray.init_disk(globs.disk0, globs.diskf);
+    ray.init_annulus(globs.annulus_inner_radius, globs.annulus_outer_radius);
     ray.init_Rs(globs.Rs);
-    ray.init_solver(globs.delta, globs.int_method, globs.rk45_tol);
+    if (!ray.init_solver(globs.delta, globs.int_method, globs.rk45_tolerance)){
+        std::cerr << "could not initialise solver." << std::endl;
+        return;
+    }
 
     // assign a pixel until none left
-    int pixel=-1;
-    while ((pixel=globs.render_count.fetch_add(1))<globs.N_pixels){
+    int pixel = -1;
+    while ((pixel = globs.render_count.fetch_add(1)) < globs.N_pixels){
 
         // render the next pixel
         render_pixel(globs, ray, pixel);
 
-        // reset the ray
-        ray.reset();
-
         // print update
-        if ((pixel+1)%(globs.N_pixels/100)==0){
+        if ((pixel + 1) % (globs.N_pixels / 100) == 0){
             std::lock_guard<std::mutex> lock(cout_mutex);
-            std::cout << (((double)pixel+1.)/globs.N_pixels*100.) << "%..." << std::endl;
+            std::cout << (((double)pixel + 1.) / globs.N_pixels * 100.) << "%.." << std::endl;
         }       
+
+        // reset the ray
+        ray.reset_state();
+
     }
 }
 
@@ -94,14 +104,14 @@ int main()
 
     if (!glfwInit()){
         std::cerr << "Failed to initialise GLFW.\n";
-        return -1;
+        return 0;
     }
 
     GLFWwindow* window = glfwCreateWindow(globs.n_window,globs.n_window, "BlackHole", NULL, NULL);
     if (!window){
         std::cerr << "Failed to create window.\n";
         glfwTerminate();
-        return -1;
+        return 0;
     }
     glfwSetWindowAspectRatio(window, 1, 1);  // ensures the objects arent stretched
     glfwMakeContextCurrent(window);
@@ -110,7 +120,7 @@ int main()
     const int n_threads = std::thread::hardware_concurrency();
     std::cout << "Using " << n_threads << " threads." << std::endl;
     std::vector<std::thread> threads;
-    for (int ii=0; ii<n_threads; ii++)
+    for (int ii = 0; ii < n_threads; ++ii)
         threads.emplace_back(worker, std::ref(globs));
 
     // run simulation to find all pixel colours
@@ -152,7 +162,7 @@ int main()
 
         glDisable(GL_TEXTURE_2D);
 
-        // Check if Enter key is pressed to close the window
+        // check if enter key is pressed to close the window
         if (glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS) {
             std::cout << "Enter key pressed. Closing the window..." << std::endl;
             glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -164,5 +174,5 @@ int main()
     glfwDestroyWindow(window);
     glfwTerminate();
 
-    return 0;
+    return 1;
 }

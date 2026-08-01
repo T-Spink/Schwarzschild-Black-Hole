@@ -4,12 +4,12 @@
 #include "integrator.h"
 #include <cstring>
 
-enum EndDomain{
-        Error,
-        BlackHole,
-        Disk,
-        Space
-    };
+enum class EndDomain{
+    Error,
+    BlackHole,
+    Disk,
+    Space
+};
 
 class geodesics
 {
@@ -18,39 +18,35 @@ public:
 
     geodesics(void);
     void init_state(const double (&u)[8]);
-    void init_Rs(const double Rs_){ Rs = Rs_;};
-    void init_disk(const double R0, const double Rf);
-    void init_solver(const double delta, const IntegrationMethod int_method, const double tol);
-    const EndDomain GetEnd(void){return end;};
-    void reset(void);
+    void init_Rs(const double Rs_);
+    void init_annulus(const double annulus_inner_radius_, const double annulus_outer_radius_);
+    bool init_solver(const double delta, const IntegrationMethod int_method, const double tol);
+    void reset_state(void);
     ~geodesics(void);
 
-    void GetRGB(const double (&IC)[8], unsigned char (&rgb)[3]);
+    void traverse_geodesic(const double (&IC)[8], EndDomain &end);
+    void get_RGB(EndDomain end, unsigned char (&rgb)[3]);
 
 private:
 
     double state[8];  // t,r,theta,phi,dt,dR,dtheta,dphi
-
-    EndDomain end;
-
     double g[4], ginv[4];
     double dg[4][4][4];
-    
+    double delta = 1e-1;
+    const int max_integration_steps = 1e6;
+
     double initial_state[8];
-    double Rs, disk_R0, disk_Rf;
-    const unsigned char rgb0[3] = {255, 230, 200}; // colour at disk0
-    const unsigned char rgbf[3] = {80, 30, 10};  // colour at diskf
-    double delta;
+    double annulus_inner_radius = 3.;
+    double annulus_outer_radius = 6.;
+    const double annulus_width_by_2 = 0.05;
+    const unsigned char annulus_inner_rgb[3] = {255, 230, 200}; // colour at disk0
+    const unsigned char annulus_outer_rgb[3] = {80, 30, 10};  // colour at diskf
+    const double R0_prop_for_ray_escaped = 1.05;
+    const double Rs_prop_for_in_black_hole = 1.05;
+    double R_ray_in_black_hole = 1.05;
 
-    integrator<geodesics>* solver;
+    integrator* solver = nullptr;
 
-    EndDomain FindEndDomain(const double (&IC)[8]);
-
-    void rhs(const double* const u, double* const f);
-
-    void calc_metric(const double (&state)[8]);
-    void calc_dmetric(const double (&state)[8]);
-    void calc_metric_inv(const double (&state)[8]);
 };
 
 #endif
