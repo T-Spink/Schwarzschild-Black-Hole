@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
 project(BlackHole)
 
-set(CMAKE_CXX_STANDARD 17)
+#set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
+
+set(CMAKE_CXX_STANDARD 20)
 
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
@@ -18,6 +20,7 @@ include_directories(
 set(SOURCES
     ${PROJECT_SOURCE_DIR}/src/main.cpp
     ${PROJECT_SOURCE_DIR}/src/geodesics.cpp
+    ${PROJECT_SOURCE_DIR}/src/globals.cpp
     ${PROJECT_SOURCE_DIR}/integrator/integrator.cpp
 )
 

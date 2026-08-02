@@ -1,33 +1,18 @@
 #include "geodesics.h"
+#include "globals.h"
 #include "integrator.h"
 #include <cstring>
 #include <iostream>
 #include <cmath>
 #include <Eigen/Dense>
 #include <algorithm>
+#include <numbers>
 
-static double Rs = 1; // this is currently set by all threads without locking etc ... not safe
+static void calc_metric(const double (&state)[globals::n_8_vector], double (&g)[globals::n_4_vector]);
 
-static void calc_metric(const double (&state)[8], double (&g)[4]);
-void f_geodesic(const double* u_ptr, double* f);
-
-geodesics::geodesics()
+geodesics::geodesics(integrator* const solver_ , const double delta_) : solver(solver_), delta(delta_)
 {
-    R_ray_in_black_hole = Rs_prop_for_in_black_hole * Rs;
-    reset_state();
-}
-
-bool geodesics::init_solver(const double delta_, const IntegrationMethod int_method, const double tol)
-{
-    if (solver){
-        std::cerr << "cannot init_solver more than once." << std::endl;
-        return false;
-    }
-    solver = new integrator(&f_geodesic, 8, int_method);
-    delta = delta_;
-    const int max_its = 1e6;
-    solver->init_adaptive(tol, max_its);
-    return true;
+    R_ray_in_black_hole = Rs_prop_for_in_black_hole * globals::Rs;
 }
 
 void geodesics::init_Rs(const double Rs_)
@@ -36,99 +21,27 @@ void geodesics::init_Rs(const double Rs_)
     R_ray_in_black_hole = Rs_prop_for_in_black_hole * Rs;
 }
 
-void geodesics::init_annulus(const double R0, const double Rf)
+void geodesics::init_annulus(const double annulus_inner_radius_, const double annulus_outer_radius_)
 {
-    annulus_inner_radius = R0;
-    annulus_outer_radius = Rf;
+    annulus_inner_radius = annulus_inner_radius_;
+    annulus_outer_radius = annulus_outer_radius_;
 }
 
-geodesics::~geodesics(void)
+void geodesics::traverse_geodesic(const double (&initial_state)[globals::n_8_vector], EndDomain &end, unsigned char (&rgb)[globals::rgb_length])
 {
-    if (solver) 
-        delete solver;
-}
+    // --------------------------------------------------------- //
+    // traverse the geodesic until an end domain is reached
 
-void geodesics::reset_state(void)
-{
-    std::fill_n(state, 8, 0.);
-    std::fill_n(initial_state, 8, 0.);
-    for (int ii = 0; ii < 4; ++ii){
-        for (int jj = 0; jj < 4; ++jj)
-            std::fill_n(dg[ii][jj], 4, 0.);
-    }
-    std::fill_n(g, 4, 0.);
-    std::fill_n(ginv, 4, 0.);
-    delta = 1e-1;
-}
-
-void geodesics::get_RGB(EndDomain end, unsigned char (&rgb)[3])
-{
-    // get colour
-    switch (end)
-    {
-        case EndDomain::Disk:
-        {
-            const double R = state[1];
-
-            // estimate base rgb
-            const double t = (R - annulus_inner_radius) / (annulus_outer_radius - annulus_inner_radius);
-            const double theta = std::sin(t * M_PI_2);
-
-            // linear interpolate between the colours
-            for (int ii = 0; ii < 3; ++ii)
-                rgb[ii] = annulus_inner_rgb[ii] + (annulus_outer_rgb[ii] - annulus_inner_rgb[ii]) * theta;
-
-            // calculate relativistic effects
-            const double tt = 1. / std::sqrt(1. - 3. / (2. * R));
-            const Eigen::Vector<double,4> disk_4vel = {tt, 0, 0, tt * std::sqrt(1. / (2. * std::pow(R, 3)))};
-            const Eigen::Vector<double,4> cam_4vel = {1. / (1. - 1. / R), 0., 0., 0.};
-            double g[4] = {};
-            calc_metric(state, g);
-            double disk_contr = 0, cam_contr = 0;
-            for (int kk = 0; kk < 4; ++kk){
-                disk_contr += disk_4vel[kk] * state[kk + 4] * g[kk]; // on disk
-                cam_contr += cam_4vel[kk] * initial_state[kk + 4] * g[kk]; // at camera
-            }
-            double intensity_sf = std::pow(cam_contr / disk_contr, 3);
-
-            // apply intensity
-            for (int kk = 0; kk < 3; ++kk)
-                rgb[kk] = std::min(255., intensity_sf * rgb[kk]);
-
-            break;
-        }
-        case EndDomain::Space:
-        case EndDomain::BlackHole:
-            memset(rgb, 0, 3 * sizeof(unsigned char));
-            break;
-        case EndDomain::Error:
-        default:
-            rgb[0] = 0;
-            rgb[1] = 255;
-            rgb[2] = 0;
-            break;
-    }
-
-}
-
-void geodesics::traverse_geodesic(const double (&IC)[8], EndDomain &end)
-{
-    if (!solver){
-        std::cerr << "solver must be initialised in geodesics" << std::endl;
-        end = EndDomain::Error;
-        return;
-    }
-
-    memcpy(state        , IC, 8 * sizeof(double));
-    memcpy(initial_state, IC, 8 * sizeof(double));
+    double state[globals::n_8_vector];
+    memcpy(&state[0], &initial_state[0], globals::n_8_vector * sizeof(double));
     const double R_ray_escaped = R0_prop_for_ray_escaped * state[1];
-
-    for (int cc = 0; cc < max_integration_steps; ++cc)
+    int cc = 0;
+    while (++cc)
     {
         // integrate the geodesic equation
         if (!solver->integrate(delta, state)) {
             end = EndDomain::Error;
-            return;
+            break;
         }
 
         // check end conditions
@@ -139,38 +52,91 @@ void geodesics::traverse_geodesic(const double (&IC)[8], EndDomain &end)
         // check if in black hole
         if (R <= R_ray_in_black_hole){
             end = EndDomain::BlackHole;
-            return;
+            break;
         }
 
         // check if hit disc
-        if ((fabs(z) < annulus_width_by_2) && 
+        if ((fabs(z) <= annulus_width_by_2) && 
             (annulus_inner_radius < R) && 
             (R < annulus_outer_radius)){
-                end = EndDomain::Disk;
-                return;
-            }
+            end = EndDomain::Disk;
+            break;
+        }
 
         // check if disapeared
-        if (R_ray_escaped < R) {
+        if (R_ray_escaped <= R) {
             end = EndDomain::Space;
-            return;
+            break;
+        }
+
+        // check max iterations
+        if (cc >= max_integration_steps){
+            end = EndDomain::Error;
+            break;
         }
     
     }
 
-    // error
-    end = EndDomain::Error;
-    return;
+
+    // --------------------------------------------------------- //
+    // return an rgb based on end domain
+
+    switch (end)
+    {
+        case EndDomain::Disk:
+        {
+            const double R = state[1];
+
+            // estimate base rgb
+            const double t = (R - annulus_inner_radius) / (annulus_outer_radius - annulus_inner_radius);
+            const double theta = std::sin(t * std::numbers::pi / 2.);
+
+            // linear interpolate between the colours
+            for (int ii = 0; ii < globals::rgb_length; ++ii)
+                rgb[ii] = annulus_inner_rgb[ii] + (annulus_outer_rgb[ii] - annulus_inner_rgb[ii]) * theta;
+
+            // calculate relativistic effects
+            const double tt = 1. / std::sqrt(1. - 3. / (2. * R));
+            const Eigen::Vector<double,4> disk_4vel = {tt, 0, 0, tt * std::sqrt(1. / (2. * std::pow(R, 3)))};
+            const Eigen::Vector<double,4> cam_4vel = {1. / (1. - 1. / R), 0., 0., 0.};
+            double g[globals::n_4_vector];
+            calc_metric(state, g);
+            double disk_contr = 0, cam_contr = 0;
+            for (int kk = 0; kk < globals::n_4_vector; ++kk){
+                disk_contr += disk_4vel[kk] * state[kk + globals::n_4_vector] * g[kk]; // on disk
+                cam_contr += cam_4vel[kk] * initial_state[kk + globals::n_4_vector] * g[kk]; // at camera
+            }
+            double intensity_sf = std::pow(cam_contr / disk_contr, 3);
+
+            // apply intensity
+            for (int kk = 0; kk < globals::rgb_length; ++kk)
+                rgb[kk] = std::min((double)globals::rgb_element_max, intensity_sf * rgb[kk]);
+
+            break;
+        }
+        case EndDomain::Space:
+        case EndDomain::BlackHole:
+            memcpy(&rgb[0], &globals::black_rgb[0], globals::rgb_length * sizeof(unsigned char));
+            break;
+        case EndDomain::Error:
+        default:
+            memcpy(&rgb[0], &globals::green_rgb[0], globals::rgb_length * sizeof(unsigned char));
+            break;
+    }
+
+    // --------------------------------------------------------- //
 
 }
 
 void f_geodesic(const double* const state, double* const f)
 {
-    std::fill_n(f, 8, 0.);
-    double g[4], ginv[4] = {}, dg[4][4][4] = {}; // g is set to 0 in the calc_metric
+    std::fill_n(f, globals::n_8_vector, 0.);
+    double g[globals::n_4_vector], 
+    ginv[globals::n_4_vector] = {}, 
+    dg[globals::n_4_vector][globals::n_4_vector][globals::n_4_vector] = {}; // g is set to 0 in the calc_metric
 
-    double u[8];
-    memcpy(&u, state, 8 * sizeof(double));
+    double u[globals::n_8_vector];
+    memcpy(&u, state, globals::n_8_vector * sizeof(double));
 
     /*
     // check null condition satisfied
@@ -190,7 +156,7 @@ void f_geodesic(const double* const state, double* const f)
     // ----
     // calculate ginv
     
-    for (int ii = 0; ii < 3; ++ii)
+    for (int ii = 0; ii < globals::n_3_vector; ++ii)
         ginv[ii] = 1. / g[ii];
     
     // handle possible divide by zero at theta=0,pi
@@ -204,10 +170,10 @@ void f_geodesic(const double* const state, double* const f)
     const double theta = u[2];
 
     // dgdR
-    const double f_ = 1. - Rs / R;
+    const double f_ = 1. - globals::Rs / R;
     const double st = std::sin(theta);
-    dg[1][0][0] = -Rs / (R * R);
-    dg[1][1][1] = -Rs / (R * R * f_ * f_);
+    dg[1][0][0] = -globals::Rs / (R * R);
+    dg[1][1][1] = -globals::Rs / (R * R * f_ * f_);
     dg[1][2][2] = 2. * R;
     dg[1][3][3] = 2. * R * st * st;
        
@@ -218,20 +184,20 @@ void f_geodesic(const double* const state, double* const f)
     // ----
     // calculate duds=f
 
-    for (int mu = 0; mu < 4; ++mu)
-        f[mu] = u[mu + 4];
+    for (int mu = 0; mu < globals::n_4_vector; ++mu)
+        f[mu] = u[mu + globals::n_4_vector];
 
-    for (int mu = 0; mu < 4; ++mu){
+    for (int mu = 0; mu < globals::n_4_vector; ++mu){
 
-        for (int alpha = 0; alpha < 4; ++alpha){
-            for (int beta = 0; beta < 4; ++beta){
+        for (int alpha = 0; alpha < globals::n_4_vector; ++alpha){
+            for (int beta = 0; beta < globals::n_4_vector; ++beta){
 
                 double lambda = dg[beta][mu][alpha] + dg[alpha][mu][beta] - dg[mu][alpha][beta]; // simplified since tensors are diagonal
-                f[mu + 4] += lambda * u[alpha + 4] * u[beta + 4];
+                f[mu + globals::n_4_vector] += lambda * u[alpha + globals::n_4_vector] * u[beta + globals::n_4_vector];
 
             }
         }   
-        f[mu + 4] *= -0.5 * ginv[mu];
+        f[mu + globals::n_4_vector] *= -0.5 * ginv[mu];
 
     }
 
@@ -239,13 +205,13 @@ void f_geodesic(const double* const state, double* const f)
     // ----
 }
 
-static void calc_metric(const double (&state)[8], double (&g)[4])
+static void calc_metric(const double (&state)[globals::n_8_vector], double (&g)[globals::n_4_vector])
 {
-    memset(&g, 0, 4 * sizeof(double));
+    memset(&g, 0, globals::n_4_vector * sizeof(double));
 
     const double R = state[1];
     const double theta = state[2];
-    const double f = (1. - Rs / R);
+    const double f = (1. - globals::Rs / R);
 
     g[0] = -f;
     g[1] = 1. / f;

@@ -3,105 +3,65 @@
 
 #include "integrator.h"
 #include <Eigen/Dense>
+#include <numbers>
+#include <atomic>
 
-struct globals
+namespace globals
 {
-    // ========================================= // 
-    // inputs
+    // ======================================================================================= //
+    // INPUTS
 
-    // numerical params
-    const double delta = 1e-1;
-    const IntegrationMethod int_method = IntegrationMethod::RK2;
-    const double rk45_tolerance = 1e-6;
+    // numerical integration
+    constexpr double delta = 1e-1;
+    constexpr IntegrationMethod int_method = IntegrationMethod::RK2;
+    constexpr double rk45_tolerance = 1e-6;
+    constexpr int rk45_max_steps = 1e6;
 
-    // physical params
-    const double Rs = 1.;
-    const double annulus_inner_radius = 3. * Rs;
-    const double annulus_outer_radius = 6.;
+    // boundary
+    constexpr double Rs = 1.;
+    constexpr double annulus_inner_radius = 3. * Rs;
+    constexpr double annulus_outer_radius = 6. * Rs;
 
-    // graphics params/ initial conditions
-    const double R0 = 9.;
-    const double theta0 = M_PI_2 - 0.1;
-    const double phi0 = 0.;
-    const int n_pixels = 300;
-    const int n_window = 500;
-    const double fov_degs = 90.;
-    const bool show_Rs = false;
-
-
-    // ========================================= // 
-    // variables
-
-    unsigned char* pixels = nullptr;
-    std::atomic<int> render_count = 0;
-
-    int N_pixels = 0;
-    double pixel_sf = -1.;
-    Eigen::Vector<double, 3> position;
-    Eigen::Vector<double,3> u,v,n;
-    Eigen::Matrix<double,4,4> tetrad;
-    Eigen::Matrix<double,3,3> cart_to_spherical;
-
-
-    // ========================================= // 
-    // methods
-
-    globals(void)
-    {
-        const double rads_per_degs = M_PI / 180.;
-        N_pixels = n_pixels * n_pixels;
-        pixel_sf = R0 * std::tan(fov_degs * rads_per_degs / 2.) / (n_pixels / 2.);
-
-        pixels = new unsigned char[n_pixels * n_pixels * 3];
-        memset(pixels, 0, 3 * N_pixels * sizeof(unsigned char));
-
-        // position of camera
-        position << R0, theta0, phi0;
-
-        const double st = std::sin(theta0);
-        const double ct = std::cos(theta0);
-        const double sp = std::sin(phi0);
-        const double cp = std::cos(phi0);
-
-        // determine normal to and basis vectors of the image plane 
-        n << 
-            R0 * st * cp, 
-            R0 * st * sp,
-            R0 * ct
-        ;
-        u << -n[2] / n.norm(), 0, n[0] / n.norm();
-        v = n.cross(u).normalized();
+    // observer
+    static constexpr double observer_R = 9.;
+    static constexpr double observer_theta = std::numbers::pi / 2. - 0.1;
+    static constexpr double observer_phi = 0.;
+    constexpr double fov_degs = 90.;
     
-        // initialise tetrad matrix
-        const double f = 1. - Rs / R0;
-        tetrad = Eigen::Matrix<double,4,4>::Zero();
-        tetrad(0,0) = 1. / std::sqrt(f);
-        tetrad(1,1) = std::sqrt(f);
-        tetrad(2,2) = 1. / R0;
-        tetrad(3,3) = 1. / (R0 * st);
-
-        // calculate tranformation matrix
-        cart_to_spherical <<  
-            (st * cp),
-            (st * sp),
-            (ct     ),
-            (ct * cp),
-            (ct * sp),
-            (-st    ),
-            (-sp    ),
-            (cp     ),
-            (0.     )
-        ;
-    };
-    
-    ~globals(void)
-    {
-        delete[] pixels;
-    };
+    // grahics
+    constexpr int n_pixels = 300;
+    constexpr int n_window = 500;    
+    constexpr bool show_Rs = false;
+    constexpr int N_pixels = n_pixels * n_pixels;
 
 
-    // ========================================= // 
-};
+    // ======================================================================================= //
 
+    // constants
+    constexpr double rads_per_degs = std::numbers::pi / 180.;
+    constexpr int n_3_vector = 3;  // [R, theta, phi]
+    constexpr int n_4_vector = 4;  // [t, R, theta, phi]
+    constexpr int n_8_vector = 8;  // [t, R, theta, phi, td, Rd, thetad, phid]
+    constexpr int rgb_length = 3;  // [red, green, blue]
+    constexpr int rgb_element_max = 255;
+    constexpr unsigned char red_rgb[globals::rgb_length] = {rgb_element_max, 0, 0};
+    constexpr unsigned char green_rgb[globals::rgb_length] = {0, rgb_element_max, 0};
+    constexpr unsigned char black_rgb[globals::rgb_length] = {};
+
+    // global values calculated in globals.cpp
+    extern integrator* const solver;
+    extern const double pixel_sf;
+    extern const Eigen::Vector<double, n_3_vector> observer_position;
+    extern const Eigen::Vector<double, n_3_vector> u;
+    extern const Eigen::Vector<double, n_3_vector> v;
+    extern const Eigen::Vector<double, n_3_vector> n;
+    extern const Eigen::Matrix<double,globals::n_4_vector,globals::n_4_vector> tetrad;
+    extern const Eigen::Matrix<double, n_3_vector, n_3_vector> cart_to_spherical;
+    extern unsigned char* const pixels;
+    extern std::atomic<int> render_count;
+
+
+    // ======================================================================================= //
+}
 
 #endif

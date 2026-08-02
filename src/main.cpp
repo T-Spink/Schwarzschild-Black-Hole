@@ -13,101 +13,81 @@
 #include <mutex>
 #include <vector>
 
-// make calc_ functions pure/static do rhs can be static
-// then the integrator can be seperated out as a dll and make completely seperate
-
 std::mutex cout_mutex;
 
-void render_pixel(const globals& globs, geodesics& ray, const int ll)
-{
-     // unflatten the coordinates
-    const int ii = ll % globs.n_pixels;
-    const int jj = (ll - ii) / globs.n_pixels;
-
-    // translate coordinates to range [-n/2, n/2]
-    const double ii_ = ii - 0.5 * (globs.n_pixels - 1);
-    const double jj_ = jj - 0.5 * (globs.n_pixels - 1);
-
-    // calculate direction of camera/ ray
-    const Eigen::Vector<double,3> point = globs.pixel_sf * (jj_ * globs.u + ii_ * globs.v);
-    const Eigen::Vector<double,3> ray_direction = (point - globs.n).normalized();
-    const Eigen::Vector<double,3> d = (globs.cart_to_spherical * ray_direction).normalized();
-
-    // apply transformation
-    double p[4] = {};
-    p[0] = 1.;
-    for (int kk = 0; kk < 3; ++kk)
-        p[kk + 1] = globs.tetrad(kk + 1, kk + 1) * d[kk];
-
-    // finialise state
-    double IC[8] = {0., 
-        globs.position[0], globs.position[1], globs.position[2], 
-        p[0], p[1], p[2], p[3]
-    };
-
-    // integrate geodesic equations to find end domain
-    EndDomain end;
-    ray.traverse_geodesic(IC, end);
-
-    // get the rgb for the end domains
-    unsigned char rgb[3];
-    ray.get_RGB(end, rgb);
-
-    // illustrate the edge of the black hole
-    double r = std::sqrt(ii_ * ii_ + jj_ * jj_) * globs.pixel_sf / globs.Rs;
-    if (globs.show_Rs && end != EndDomain::Disk && r < 1.05 && r > 0.95){
-        rgb[0] = 255;
-        rgb[1] = 0;
-        rgb[2] = 0;
-    }
-
-    // set the pixel colour
-    memcpy(&globs.pixels[3 * ll], &rgb, 3 * sizeof(unsigned char));
-
-}
-
-void worker(globals& globs)
+void worker(void)
 {
     // create a ray
-    geodesics ray;        
-    ray.init_annulus(globs.annulus_inner_radius, globs.annulus_outer_radius);
-    ray.init_Rs(globs.Rs);
-    if (!ray.init_solver(globs.delta, globs.int_method, globs.rk45_tolerance)){
-        std::cerr << "could not initialise solver." << std::endl;
-        return;
-    }
+    geodesics ray(globals::solver, globals::delta);        
+    ray.init_annulus(globals::annulus_inner_radius, globals::annulus_outer_radius);
+    ray.init_Rs(globals::Rs);
 
     // assign a pixel until none left
-    int pixel = -1;
-    while ((pixel = globs.render_count.fetch_add(1)) < globs.N_pixels){
+    unsigned char pixel_rgb[globals::rgb_length];
+    EndDomain end;
+    int pixel;
+    while ((pixel = globals::render_count.fetch_add(1)) < globals::N_pixels)
+    {
+        
+        // unflatten the coordinates
+        const int ll = pixel;
+        const int ii = ll % globals::n_pixels;
+        const int jj = (ll - ii) / globals::n_pixels;
 
-        // render the next pixel
-        render_pixel(globs, ray, pixel);
+        // translate coordinates to range [-n/2, n/2]
+        const double ii_ = ii - 0.5 * (globals::n_pixels - 1);
+        const double jj_ = jj - 0.5 * (globals::n_pixels - 1);
+
+        // calculate direction of camera/ ray
+        const Eigen::Vector<double, globals::n_3_vector> point = globals::pixel_sf * (jj_ * globals::u + ii_ * globals::v);
+        const Eigen::Vector<double, globals::n_3_vector> ray_direction = (point - globals::n).normalized();
+        const Eigen::Vector<double, globals::n_3_vector> d = (globals::cart_to_spherical * ray_direction).normalized();
+
+        // apply transformation
+        double p[globals::n_4_vector] = {};
+        p[0] = 1.;
+        for (int kk = 0; kk < globals::n_3_vector; ++kk)
+            p[kk + 1] = globals::tetrad(kk + 1, kk + 1) * d[kk];
+
+        // finialise state
+        double IC[globals::n_8_vector] = {0., 
+            globals::observer_position[0], globals::observer_position[1], globals::observer_position[2], 
+            p[0], p[1], p[2], p[3]
+        };
+
+        // integrate geodesic equations to find end domain and rgb
+        ray.traverse_geodesic(IC, end, pixel_rgb);
+
+        // illustrate the edge of the black hole
+        double r = std::sqrt(ii_ * ii_ + jj_ * jj_) * globals::pixel_sf / globals::Rs;
+        if (globals::show_Rs && end != EndDomain::Disk && r < 1.05 && r > 0.95)
+            memcpy(&pixel_rgb[0], &globals::red_rgb[0], globals::rgb_length * sizeof(unsigned char));
+
+        // set the pixel colour
+        memcpy(&globals::pixels[globals::rgb_length * ll], &pixel_rgb, globals::rgb_length * sizeof(unsigned char));
 
         // print update
-        if ((pixel + 1) % (globs.N_pixels / 100) == 0){
+        if ((ll + 1) % (globals::N_pixels / 100) == 0){
             std::lock_guard<std::mutex> lock(cout_mutex);
-            std::cout << (((double)pixel + 1.) / globs.N_pixels * 100.) << "%.." << std::endl;
+            std::cout << (((double)ll + 1.) / globals::N_pixels * 100.) << "%.." << std::endl;
         }       
-
-        // reset the ray
-        ray.reset_state();
+        //printf("%d\n", pixel);
 
     }
+
 }
+
 
 
 int main()
 {
-    // structure containing all global variables
-    globals globs;
 
     if (!glfwInit()){
         std::cerr << "Failed to initialise GLFW.\n";
         return 0;
     }
 
-    GLFWwindow* window = glfwCreateWindow(globs.n_window,globs.n_window, "BlackHole", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(globals::n_window,globals::n_window, "BlackHole", NULL, NULL);
     if (!window){
         std::cerr << "Failed to create window.\n";
         glfwTerminate();
@@ -121,7 +101,7 @@ int main()
     std::cout << "Using " << n_threads << " threads." << std::endl;
     std::vector<std::thread> threads;
     for (int ii = 0; ii < n_threads; ++ii)
-        threads.emplace_back(worker, std::ref(globs));
+        threads.emplace_back(worker);
 
     // run simulation to find all pixel colours
     std::cout << "Generating pixels..." << std::endl;
@@ -139,7 +119,7 @@ int main()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     // upload pixel data to texture
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, globs.n_pixels, globs.n_pixels, 0, GL_RGB, GL_UNSIGNED_BYTE, globs.pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, globals::n_pixels, globals::n_pixels, 0, GL_RGB, GL_UNSIGNED_BYTE, globals::pixels);
 
     // create window and display pi
     while (!glfwWindowShouldClose(window)){
